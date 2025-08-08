@@ -12,7 +12,6 @@ from typing import Optional, List, Dict, Any
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Import or stop if missing
 try:
     from apify_client import ApifyClient
 except ModuleNotFoundError:
@@ -35,14 +34,13 @@ except ImportError:
 st.set_page_config("Meta Threads DOL/KOL Vetting Tool", layout="wide", page_icon="🩺")
 st.title("🩺 Meta Threads DOL/KOL Vetting Tool")
 
-# --- Keyword lists for rationale tagging ---
+# --- Keyword lists ---
 ONCOLOGY_TERMS = ["oncology", "cancer", "monoclonal", "checkpoint", "immunotherapy"]
 GI_TERMS = ["biliary tract", "gastric", "gea", "gi", "adenocarcinoma"]
 RESEARCH_TERMS = ["biomarker", "clinical trial", "abstract", "network", "congress"]
 BRAND_TERMS = ["ziihera", "zanidatamab", "brandA", "pd-l1"]
 
 def retry_with_backoff(func=None, *, max_retries=3, base_delay=2):
-    """Decorator for retrying a function with exponential backoff on exceptions."""
     def decorator(f):
         def wrapper(*args, **kwargs):
             attempt = 0
@@ -53,10 +51,10 @@ def retry_with_backoff(func=None, *, max_retries=3, base_delay=2):
                 except Exception as e:
                     last_exception = e
                     attempt += 1
-                    delay = base_delay * (2 ** (attempt - 1)) + random.uniform(0, 1)
-                    logger.warning(f"Retry {attempt} for {f.__name__} after exception: {e}, sleeping {delay:.1f}s")
+                    delay = base_delay * (2 ** (attempt -1)) + random.uniform(0,1)
+                    logger.warning(f"Retry {attempt} for {f.__name__} after exception: {e}, sleep {delay:.1f}s")
                     time.sleep(delay)
-            logger.error(f"Function {f.__name__} failed after {max_retries} retries: {last_exception}")
+            logger.error(f"{f.__name__} failed after {max_retries} retries: {last_exception}")
             raise last_exception
         return wrapper
     if func is None:
@@ -66,12 +64,10 @@ def retry_with_backoff(func=None, *, max_retries=3, base_delay=2):
 
 @st.cache_resource
 def get_apify_client(api_token: str) -> ApifyClient:
-    """Initialize and cache Apify client."""
     return ApifyClient(api_token)
 
 @st.cache_resource
 def get_openai_client(api_key: str):
-    """Initialize and cache OpenAI client."""
     if not openai:
         raise RuntimeError("OpenAI Python SDK is not installed.")
     return openai.OpenAI(api_key=api_key)
@@ -128,7 +124,6 @@ def get_llm_response(
     gemini_reasoning_effort: Optional[str] = None,
     gemini_reasoning_summary: Optional[str] = None,
 ) -> str:
-    """Dispatch LLM API call based on provider."""
     try:
         if provider == "OpenAI GPT":
             client = get_openai_client(openai_api_key)
@@ -150,48 +145,86 @@ def get_llm_response(
         return f"{provider} call failed: {e}"
 
 @st.cache_data(show_spinner=False, persist="disk")
-def run_meta_threads_scraper_batched(api_key: str, query: str, target_total: int, batch_size: int) -> List[Dict[str, Any]]:
-    """Scrape Meta Threads posts in batches using Apify Meta Threads Scraper actor."""
+def run_meta_threads_scraper_batched(
+    api_key: str,
+    query: str,
+    target_total: int,
+    batch_size: int,
+    use_proxy: bool = True,
+) -> List[Dict[str, Any]]:
+    """
+    Scrape Meta Threads posts in batches using Apify actor with retry and proxy options.
+    """
     MAX_WAIT_SECONDS = 180
+    MAX_FAILURES = 5
     client = get_apify_client(api_key)
     results = []
     offset = 0
     failures = 0
     pbar = st.progress(0.0, text="Scraping Meta Threads...")
-    while len(results) < target_total and failures < 5:
+
+    base_run_input = {
+        "search": query,
+        "mode": "keyword",
+        "resultsPerPage": batch_size,
+        "maxPosts": batch_size,
+    }
+    if use_proxy:
+        base_run_input["proxyConfiguration"] = {"useApifyProxy": True}
+
+    while len(results) < target_total and failures < MAX_FAILURES:
         st.info(f"Launching batch {1 + offset // batch_size}: {len(results)} of {target_total}")
         try:
-            run = client.actor("futurizerush/meta-threads-scraper").call(
-                run_input={
-                    "search": query,
-                    "mode": "keyword",
-                    "resultsPerPage": batch_size,
-                    "maxPosts": batch_size,
-                    "offset": offset,
-                }
-            )
+            run_input = base_run_input.copy()
+            run_input["offset"] = offset
+
+            run = client.actor("futurizerush/meta-threads-scraper").call(run_input=run_input)
+
+            actor_run_id = run.get("id", "(unknown)")
+            actor_run_url = f"https://console.apify.com/actor-runs/{actor_run_id}"
+            st.caption(f"Actor run: [{actor_run_id}]({actor_run_url})")
+
             dataset_id = run.get("defaultDatasetId")
             if not dataset_id:
                 failures += 1
-                st.error("No dataset ID returned from actor run, retrying...")
+                st.error(f"No dataset ID returned from actor run ID {actor_run_id}, retrying...")
+                time.sleep(5 * failures)
                 continue
+
             batch_items = list(client.dataset(dataset_id).iterate_items())
             if not batch_items:
                 failures += 1
-                st.error("No posts found in batch, retrying...")
+                st.warning(f"No posts found in batch dataset ID {dataset_id}, retrying...")
+                time.sleep(5 * failures)
                 continue
+
+            new_items_count = 0
             for item in batch_items:
                 if item not in results:
                     results.append(item)
+                    new_items_count += 1
+
+            st.info(f"Batch returned {len(batch_items)} posts, {new_items_count} new added.")
             offset += batch_size
-            pbar.progress(min(1.0, len(results) / float(target_total)))
+            pbar.progress(min(1.0, len(results)/float(target_total)))
+
             if len(batch_items) < batch_size:
-                break  # No more data
+                st.info("Less posts than batch size returned, assuming no more data.")
+                break
+
+            failures = 0  # reset after success
+
         except Exception as e:
-            logger.error(f"Scraping batch failed: {e}")
-            st.error(f"Scraping batch failed with error: {e}")
             failures += 1
+            logger.error(f"Scraping batch failed: {e}")
+            st.error(f"Scraping batch failed ({failures}/{MAX_FAILURES}): {e}")
+            time.sleep(5 * failures)
+
     pbar.progress(1.0)
+
+    if not results:
+        st.warning("No posts found after all retries. Try adjusting search terms or enabling proxy.")
+
     return results[:target_total]
 
 def classify_kol_dol(score: float) -> str:
@@ -258,7 +291,6 @@ def process_threads_posts(
     fetch_time: Optional[datetime] = None,
     last_fetch_time: Optional[datetime] = None,
 ) -> pd.DataFrame:
-    """Process raw posts and create a scored DataFrame."""
     results = []
     for post in posts:
         try:
@@ -299,9 +331,9 @@ def process_threads_posts(
 
 def main():
     global run_mode
-    # Sidebar inputs
     apify_api_key = st.sidebar.text_input("Apify API Token", value=os.getenv("APIFY_API_TOKEN", ""), type="password")
     llm_provider = st.sidebar.selectbox("LLM Provider", ["OpenAI GPT", "Google Gemini"])
+    use_proxy = st.sidebar.checkbox("Use Apify Proxy (recommended)", value=True)
 
     openai_api_key = None
     openai_model = None
@@ -312,10 +344,6 @@ def main():
 
     temperature = 0.6
     max_tokens = 512
-
-    # Validate apify_api_key early
-    if apify_api_key.strip() == "":
-        st.sidebar.warning("Apify API Token is required to scrape Meta Threads.")
 
     if llm_provider == "OpenAI GPT":
         openai_api_key = st.sidebar.text_input("OpenAI API Key", value=os.getenv("OPENAI_API_KEY", ""), type="password")
@@ -341,7 +369,7 @@ def main():
     batch_size = st.sidebar.number_input("Batch Size per Run", min_value=10, max_value=200, value=20)
     run_mode = st.sidebar.radio("Analysis Type", ["Doctor Vetting (DOL/KOL)", "Brand Vetting (Sentiment)"])
 
-    # Initialize session state variables
+    # Session state init
     if "last_fetch_time" not in st.session_state:
         st.session_state.last_fetch_time = None
     if "threads_df" not in st.session_state:
@@ -355,11 +383,16 @@ def main():
         if not apify_api_key.strip():
             st.error("Apify API Token is required.")
             return
+        if not query.strip():
+            st.error("Please enter a search term for Threads posts.")
+            return
+
         st.session_state.last_fetch_time = datetime.now()
-        posts = run_meta_threads_scraper_batched(apify_api_key, query, target_total, batch_size)
+        posts = run_meta_threads_scraper_batched(apify_api_key, query, target_total, batch_size, use_proxy=use_proxy)
         if not posts:
             st.warning("No Threads posts found.")
             return
+
         df = process_threads_posts(posts, fetch_time=st.session_state.last_fetch_time, last_fetch_time=None)
         st.session_state.threads_df = df
         st.success(f"Fetched and processed {len(df)} Threads posts.")
