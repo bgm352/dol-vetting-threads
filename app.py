@@ -157,6 +157,7 @@ def run_meta_threads_scraper_batched(
     results = []
     offset = 0
     failures = 0
+    actor_errors = []
     pbar = st.progress(0.0, text="Scraping Meta Threads...")
 
     base_run_input = {
@@ -180,17 +181,25 @@ def run_meta_threads_scraper_batched(
             run_url = f"https://console.apify.com/actor-runs/{run_id}"
             st.caption(f"Actor Run URL: [{run_id}]({run_url})")
 
+            if "errorMessage" in run:
+                err_msg = run["errorMessage"]
+                st.error(f"Actor run error: {err_msg}")
+                actor_errors.append(f"Run ID {run_id}: {err_msg}")
+                failures += 1
+                time.sleep(5 * failures)
+                continue
+
             dataset_id = run.get("defaultDatasetId")
             if not dataset_id:
-                failures += 1
                 st.error(f"No dataset ID returned from actor run ID {run_id}, retrying...")
+                failures += 1
                 time.sleep(5 * failures)
                 continue
 
             batch_items = list(client.dataset(dataset_id).iterate_items())
             if not batch_items:
-                failures += 1
                 st.warning(f"No posts found in batch dataset ID {dataset_id}, retrying...")
+                failures += 1
                 time.sleep(5 * failures)
                 continue
 
@@ -205,7 +214,7 @@ def run_meta_threads_scraper_batched(
                 st.info("Fewer posts than batch size returned; assuming no more data.")
                 break
 
-            failures = 0  # reset on success
+            failures = 0
 
         except Exception as e:
             failures += 1
@@ -214,6 +223,14 @@ def run_meta_threads_scraper_batched(
             time.sleep(5 * failures)
 
     pbar.progress(1.0)
+
+    if actor_errors:
+        st.subheader("Actor Errors Encountered")
+        for err in actor_errors:
+            st.markdown(f"- {err}")
+        st.session_state.actor_errors = actor_errors
+    else:
+        st.session_state.actor_errors = []
 
     if not results:
         st.warning("No posts found after all retries. Try broadening your search terms or enabling proxy.")
@@ -371,6 +388,8 @@ def main():
         st.session_state.llm_notes_text = ""
     if "llm_score_result" not in st.session_state:
         st.session_state.llm_score_result = ""
+    if "actor_errors" not in st.session_state:
+        st.session_state.actor_errors = []
 
     if st.button("Go 🚀", use_container_width=True):
         if not apify_api_key.strip():
@@ -384,6 +403,11 @@ def main():
         posts = run_meta_threads_scraper_batched(apify_api_key, query, target_total, batch_size, use_proxy=use_proxy)
         if not posts:
             st.warning("No Threads posts found.")
+            # Show actor errors if any
+            if st.session_state.actor_errors:
+                st.subheader("Actor Errors During Scraping")
+                for err in st.session_state.actor_errors:
+                    st.markdown(f"- {err}")
             return
 
         df = process_threads_posts(posts, fetch_time=st.session_state.last_fetch_time, last_fetch_time=None)
@@ -486,7 +510,19 @@ Research Notes:
             st.markdown("#### LLM DOL/KOL Score & Rationale")
             st.code(st.session_state.llm_score_result, language="yaml")
 
+    # Show actor errors log download option if errors exist
+    if st.session_state.get("actor_errors"):
+        st.subheader("Download Actor Errors Log")
+        error_log_text = "\n".join(st.session_state.actor_errors)
+        st.download_button(
+            "Download Actor Errors Log",
+            error_log_text,
+            file_name=f"actor_errors_{datetime.now():%Y%m%d_%H%M%S}.txt",
+            mime="text/plain",
+        )
+
 if __name__ == "__main__":
     main()
+
 
 
