@@ -194,7 +194,6 @@ def run_meta_threads_scraper_batched(
                 time.sleep(5 * failures)
                 continue
 
-            # Filter for truly new unique results
             new_items = [item for item in batch_items if item not in results]
             results.extend(new_items)
 
@@ -489,4 +488,5 @@ Research Notes:
 
 if __name__ == "__main__":
     main()
+
 
