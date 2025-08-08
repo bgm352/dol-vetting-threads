@@ -152,10 +152,6 @@ def run_meta_threads_scraper_batched(
     batch_size: int,
     use_proxy: bool = True,
 ) -> List[Dict[str, Any]]:
-    """
-    Scrape Meta Threads posts in batches using Apify actor with retry and proxy options.
-    """
-    MAX_WAIT_SECONDS = 180
     MAX_FAILURES = 5
     client = get_apify_client(api_key)
     results = []
@@ -180,14 +176,14 @@ def run_meta_threads_scraper_batched(
 
             run = client.actor("futurizerush/meta-threads-scraper").call(run_input=run_input)
 
-            actor_run_id = run.get("id", "(unknown)")
-            actor_run_url = f"https://console.apify.com/actor-runs/{actor_run_id}"
-            st.caption(f"Actor run: [{actor_run_id}]({actor_run_url})")
+            run_id = run.get("id", "(unknown)")
+            run_url = f"https://console.apify.com/actor-runs/{run_id}"
+            st.caption(f"Actor Run URL: [{run_id}]({run_url})")
 
             dataset_id = run.get("defaultDatasetId")
             if not dataset_id:
                 failures += 1
-                st.error(f"No dataset ID returned from actor run ID {actor_run_id}, retrying...")
+                st.error(f"No dataset ID returned from actor run ID {run_id}, retrying...")
                 time.sleep(5 * failures)
                 continue
 
@@ -198,21 +194,19 @@ def run_meta_threads_scraper_batched(
                 time.sleep(5 * failures)
                 continue
 
-            new_items_count = 0
-            for item in batch_items:
-                if item not in results:
-                    results.append(item)
-                    new_items_count += 1
+            # Filter for truly new unique results
+            new_items = [item for item in batch_items if item not in results]
+            results.extend(new_items)
 
-            st.info(f"Batch returned {len(batch_items)} posts, {new_items_count} new added.")
+            st.info(f"Batch returned {len(batch_items)} posts, {len(new_items)} new added.")
             offset += batch_size
-            pbar.progress(min(1.0, len(results)/float(target_total)))
+            pbar.progress(min(1.0, len(results) / float(target_total)))
 
             if len(batch_items) < batch_size:
-                st.info("Less posts than batch size returned, assuming no more data.")
+                st.info("Fewer posts than batch size returned; assuming no more data.")
                 break
 
-            failures = 0  # reset after success
+            failures = 0  # reset on success
 
         except Exception as e:
             failures += 1
@@ -223,7 +217,7 @@ def run_meta_threads_scraper_batched(
     pbar.progress(1.0)
 
     if not results:
-        st.warning("No posts found after all retries. Try adjusting search terms or enabling proxy.")
+        st.warning("No posts found after all retries. Try broadening your search terms or enabling proxy.")
 
     return results[:target_total]
 
@@ -384,7 +378,7 @@ def main():
             st.error("Apify API Token is required.")
             return
         if not query.strip():
-            st.error("Please enter a search term for Threads posts.")
+            st.error("Please enter a valid search term.")
             return
 
         st.session_state.last_fetch_time = datetime.now()
@@ -403,19 +397,9 @@ def main():
         st.subheader("📋 Threads Analysis Results")
 
         threads_cols = [
-            "Author",
-            "Text",
-            "Likes",
-            "Comments",
-            "DOL Score",
-            "Sentiment Score",
-            "Post URL",
-            "KOL/DOL Status",
-            "Brand Sentiment Label",
-            "LLM DOL Score Rationale",
-            "Timestamp",
-            "Data Fetched At",
-            "Is New",
+            "Author", "Text", "Likes", "Comments", "DOL Score", "Sentiment Score",
+            "Post URL", "KOL/DOL Status", "Brand Sentiment Label",
+            "LLM DOL Score Rationale", "Timestamp", "Data Fetched At", "Is New",
         ]
 
         display_option = st.radio("Choose display columns:", ["All columns", "Only main info", "Just DOL / Sentiment"])
@@ -505,3 +489,4 @@ Research Notes:
 
 if __name__ == "__main__":
     main()
+
