@@ -1,12 +1,11 @@
 # Meta Threads DOL/KOL Vetting Tool
 
-A Streamlit app for automated influencer vetting, sentiment and relevance scoring, and AI-powered analysis of Meta Threads posts and creators. Adapted from a robust TikTok vetting solution—now for Threads.
+A Streamlit app for automated vetting and AI-powered analysis of Meta Threads posts and creators. Adapted from a TikTok vetting framework to support Meta Threads via Apify’s Meta Threads Scraper.
 
 ## Features
 
-- Scrape Threads posts by keyword/user in batches (via Apify).
-- Sentiment and suitability scoring (KOL/DOL classification).
-- Use GPT or Gemini to generate human-like vetting notes and scores.
-- Download results in CSV/text, filter by custom ranges.
-- Large-scale, multi-batch processing.
-
+- Scrape Threads posts by keyword or user in batches using Apify.
+- Analyze posts for sentiment and suitability (DOL/KOL classification).
+- Generate vetting notes & scoring with OpenAI GPT or Google Gemini large language models.
+- Filter and export results as CSV or text.
+- Easy-to-use, customizable interface via Streamlit.
