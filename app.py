@@ -10,12 +10,10 @@ from textblob import TextBlob
 from typing import List, Dict, Any
 import altair as alt
 
-# ---------------- Logging & Downloads -----------------
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 nltk.download("punkt", quiet=True)
 
-# ---------------- Try Imports -----------------
 try:
     from apify_client import ApifyClient
 except ModuleNotFoundError:
@@ -32,11 +30,10 @@ try:
 except ImportError:
     genai = None
 
-# ---------------- Keywords -----------------
-ONCOLOGY_TERMS=["oncology","cancer","monoclonal","checkpoint","immunotherapy"]
-GI_TERMS=["biliary tract","gastric","gea","gi","adenocarcinoma"]
-RESEARCH_TERMS=["biomarker","clinical trial","abstract","network","congress"]
-BRAND_TERMS=["ziihera","zanidatamab","brandA","pd-l1"]
+ONCOLOGY_TERMS = ["oncology","cancer","monoclonal","checkpoint","immunotherapy"]
+GI_TERMS = ["biliary tract","gastric","gea","gi","adenocarcinoma"]
+RESEARCH_TERMS = ["biomarker","clinical trial","abstract","network","congress"]
+BRAND_TERMS = ["ziihera","zanidatamab","brandA","pd-l1"]
 
 def keyword_hits(text: str) -> Dict[str,bool]:
     t=(text or "").lower()
@@ -47,7 +44,6 @@ def keyword_hits(text: str) -> Dict[str,bool]:
         "brand": any(k in t for k in BRAND_TERMS)
     }
 
-# ---------------- Sentiment & KOL/DOL -----------------
 def classify_sentiment(score: float) -> str:
     if score > 0.15: return "Positive"
     elif score < -0.15: return "Negative"
@@ -58,7 +54,6 @@ def classify_kol_dol(score: float) -> str:
     elif score >= 5: return "DOL"
     return "Not Suitable"
 
-# ---------------- Retry Wrapper -----------------
 def retry_with_backoff(func=None, *, max_retries=3, base_delay=2):
     def decorator(f):
         def wrapper(*args,**kwargs):
@@ -72,7 +67,6 @@ def retry_with_backoff(func=None, *, max_retries=3, base_delay=2):
         return wrapper
     return decorator(func) if func else decorator
 
-# ---------------- API Clients -----------------
 @st.cache_resource
 def get_apify_client(api_token:str) -> ApifyClient:
     return ApifyClient(api_token)
@@ -100,7 +94,6 @@ def call_gemini(prompt:str, api_key:str, model:str, temperature:float, max_token
                             max_output_tokens=max_tokens if max_tokens>0 else None)
     return getattr(resp,"text",str(resp)).strip()
 
-# ---------------- Scraper -----------------
 @st.cache_data(show_spinner=False)
 def run_threads_scraper(api_key:str, usernames:List[str], max_posts:int=50) -> List[Dict[str,Any]]:
     client = get_apify_client(api_key)
@@ -111,7 +104,6 @@ def run_threads_scraper(api_key:str, usernames:List[str], max_posts:int=50) -> L
     if not dsid: return []
     return list(client.dataset(dsid).iterate_items())
 
-# ---------------- Processing -----------------
 def process_profiles_and_posts(data: List[Dict[str,Any]]):
     profiles, posts_list = {}, []
     for item in data:
@@ -166,14 +158,12 @@ def process_profiles_and_posts(data: List[Dict[str,Any]]):
         profile_rows.append(p)
     return pd.DataFrame(profile_rows), pd.DataFrame(posts_list)
 
-# ---------------- UI -----------------
 st.sidebar.header("Scraper Settings")
 api_key=st.sidebar.text_input("Apify API Token", type="password", value=os.getenv("APIFY_API_TOKEN",""))
 usernames_str=st.sidebar.text_area("Threads Usernames (comma separated)", "elonmusk")
 usernames=[u.strip().lstrip("@") for u in usernames_str.split(",") if u.strip()]
 max_posts=st.sidebar.slider("Max posts per profile",1,200,50)
 
-# High-value thresholds
 st.sidebar.header("Top Target Thresholds")
 high_score_threshold=st.sidebar.slider("High Score Threshold",5,10,8)
 high_engagement_threshold=st.sidebar.number_input("High Engagement Threshold",0,500,50)
@@ -210,50 +200,54 @@ if st.sidebar.button("Scrape & Analyze 🚀"):
             st.session_state.posts_df=posts_df
             st.session_state.last_scrape_time=datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-# ---------------- Profiles Section -----------------
 if "profiles_df" in st.session_state and not st.session_state.profiles_df.empty:
     profiles_df=st.session_state.profiles_df
     st.subheader("Profiles Overview & Charts")
 
-    # Charts Row 1
+    # Prepare dataframe for plotting - drop NaNs and convert score to str for nominal encoding
+    df_plot = profiles_df.dropna(subset=['DOL Score', 'KOL/DOL']).copy()
+    df_plot['DOL Score'] = df_plot['DOL Score'].astype(str)
+
     c1,c2=st.columns(2)
     with c1:
-        score_chart=alt.Chart(profiles_df).mark_bar().encode(
-            x=alt.X('DOL Score:O'),y='count()',color='KOL/DOL').properties(title="KOL/DOL Score Distribution")
+        score_chart=alt.Chart(df_plot).mark_bar().encode(
+            x=alt.X('DOL Score:N', title='DOL Score'),
+            y=alt.Y('count()', title='Count'),
+            color=alt.Color('KOL/DOL:N', title='KOL/DOL Status')
+        ).properties(title="KOL/DOL Score Distribution")
         st.altair_chart(score_chart, use_container_width=True)
     with c2:
         sentiment_data=profiles_df.groupby("Sentiment").size().reset_index(name="count")
-        pie=alt.Chart(sentiment_data).mark_arc().encode(theta="count:Q", color="Sentiment:N",
-                                                       tooltip=["Sentiment","count"]
-                                                       ).properties(title="Bio Sentiment Breakdown")
+        pie=alt.Chart(sentiment_data).mark_arc().encode(
+            theta="count:Q",
+            color="Sentiment:N",
+            tooltip=["Sentiment","count"]
+        ).properties(title="Bio Sentiment Breakdown")
         st.altair_chart(pie, use_container_width=True)
 
-    # Chart Row 2: Engagement vs Score scatter with highlight
     st.markdown("#### Engagement vs DOL Score (Top Targets Highlighted)")
     profiles_df["Top Target"]= (profiles_df["DOL Score"]>=high_score_threshold) & \
                                (profiles_df["Avg Engagement (Relevant)"]>=high_engagement_threshold)
+    
     scatter = alt.Chart(profiles_df).mark_circle(size=80).encode(
         x=alt.X('Avg Engagement (Relevant):Q', title='Average Engagement per Relevant Post'),
         y=alt.Y('DOL Score:Q', title='DOL Score'),
-        color='Top Target:N',
+        color=alt.Color('Top Target:N', title='Top Target'),
         tooltip=['Username','DOL Score','Avg Engagement (Relevant)','Relevant Posts','Follower Count']
     ).interactive()
     st.altair_chart(scatter, use_container_width=True)
 
-    # Top Targets table
     top_targets_df = profiles_df[profiles_df["Top Target"]]
     st.markdown(f"**Top Targets (Score ≥ {high_score_threshold}, Engagement ≥ {high_engagement_threshold})**")
     st.dataframe(top_targets_df, use_container_width=True)
     st.download_button("Download Top Targets CSV", top_targets_df.to_csv(index=False), "top_targets.csv","text/csv")
 
-    # Filters for main table
     f_status=st.multiselect("Filter by KOL/DOL",["KOL","DOL","Not Suitable"],["KOL","DOL","Not Suitable"])
     f_sent=st.multiselect("Filter by Sentiment",["Positive","Neutral","Negative"],["Positive","Neutral","Negative"])
     f_df=profiles_df[(profiles_df["KOL/DOL"].isin(f_status))&(profiles_df["Sentiment"].isin(f_sent))]
     st.dataframe(f_df, use_container_width=True)
     st.download_button("Download Profiles CSV", f_df.to_csv(index=False), "profiles.csv","text/csv")
 
-    # LLM Vetting
     if st.button("Generate Vetting Notes with LLM"):
         data_text=f_df.to_string(index=False)
         prompt=prompt_template+"\n\nProfiles Data:\n"+data_text
@@ -269,7 +263,6 @@ if "profiles_df" in st.session_state and not st.session_state.profiles_df.empty:
         st.markdown(st.session_state.llm_notes)
         st.download_button("Download Vetting Notes", st.session_state.llm_notes, "vetting_notes.txt","text/plain")
 
-# ---------------- Posts Section -----------------
 if "posts_df" in st.session_state and not st.session_state.posts_df.empty:
     posts_df=st.session_state.posts_df
     st.subheader("Posts Overview & Chart")
